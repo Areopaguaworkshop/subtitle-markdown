@@ -109,6 +109,27 @@ def configure_lm(model_string, verbose=False, **kwargs):
         if verbose:
             logger.debug(f"Gemini configuration: model={config['model']}")
         lm = dspy.LM(**config)
+    elif provider == "freellmapi":
+        api_key = os.getenv("FREELLMAPI_API_KEY")
+        if not api_key:
+            raise ValueError("FREELLMAPI_API_KEY environment variable not set.")
+
+        # FreeLLMAPI exposes an OpenAI-compatible router (model "auto" picks one)
+        model_name = (
+            model_string.split("/", 1)[1] if "/" in model_string else "auto"
+        )
+        config.update(
+            {
+                "model": f"openai/{model_name}",
+                "api_key": api_key,
+                "api_base": os.getenv(
+                    "FREELLMAPI_BASE", "http://127.0.0.1:3001/v1"
+                ),
+            }
+        )
+        if verbose:
+            logger.debug(f"FreeLLMAPI configuration: model={config['model']}")
+        lm = dspy.LM(**config)
     else:
         config.update({"model": model_string})
         if verbose:

@@ -498,6 +498,67 @@ def format_speaker_turns_for_rewrite(
     return chunks
 
 
+def rewrite_chinese(
+    paragraphs: list[str],
+    llm: str = "ollama/glm-5.2:cloud",
+    max_tokens: int = 64000,
+    timeout: int = 3600,
+    temperature: float = 0.1,
+    verbose: bool = False,
+) -> list[str]:
+    """Turn spoken Chinese into a faithful, readable written Chinese transcript."""
+    from wenbi.model import _import_dspy, configure_lm
+
+    configure_lm(
+        llm,
+        verbose=verbose,
+        max_tokens=max_tokens,
+        timeout=timeout,
+        temperature=temperature,
+    )
+    dspy = _import_dspy()
+
+    class EditedChineseTranscriptSignature(dspy.Signature):
+        """将口语化的中文转写稿改写为通顺的书面中文，而不是另写一篇文章。
+
+        完整保留说话人的每一处主张、论证、限定语、时间顺序、引文、专有名词、
+        术语、日期、数字以及有意重复的内容。保留“我觉得”“也许”“似乎”等
+        表达确定程度的说法。输入中如出现说话人标签，必须原样保留其标签和顺序。
+
+        只删除语义上空洞的口语填充（例如“嗯”“啊”“这个”“那个”“就是说”
+        “然后”“对吧”“什么的”“之类的”）、立即重复的口误、中途废弃的半句话，
+        以及不表达逻辑关系的纯语气开头（例如“那么”“好”“这样”“所以说”）。
+        修正标点与语法，只有在语义明确时才合并碎片句。
+        不要总结、不要调整顺序、不要解释、不要加强或减弱原意，不要添加事实，
+        不要猜测转写不清的措辞。不要输出时间戳、内部片段编号（如“[307]”）、
+        标题、评论或说明。
+
+        输出必须是中文，不要翻译成其他语言。只返回改写后的转写稿。
+        """
+
+        spoken_chinese_transcript: str = dspy.InputField(
+            desc="One or more consecutive raw Chinese ASR transcript paragraphs"
+        )
+        written_transcript: str = dspy.OutputField(
+            desc="Faithful written Chinese transcript in Chinese, speaker labels retained when present"
+        )
+
+    module = dspy.Predict(EditedChineseTranscriptSignature)
+
+    rewritten: list[str] = []
+    for i, paragraph in enumerate(paragraphs, 1):
+        if verbose:
+            logger.debug("Rewriting Chinese paragraph %d/%d", i, len(paragraphs))
+        try:
+            result = module(spoken_chinese_transcript=paragraph)
+            rewritten.append(result.written_transcript.strip())
+        except Exception as e:
+            logger.warning("Chinese rewrite failed for paragraph %d: %s", i, e)
+            rewritten.append(paragraph)
+
+    return rewritten
+
+
 def rewrite_chinese_interview(
     speaker_chunks: list[str],
     llm: str = "ollama/glm-5.2:cloud",
@@ -1091,8 +1152,13 @@ def process_speaker(
         if verbose:
             logger.debug("Grouped into %d topic paragraphs", len(topic_paragraphs))
 
-        # 3. Rewrite English: remove oral fillers, conservative cleanup
-        rewritten_paragraphs = rewrite_english(
+        # 3. Rewrite in the source language: Chinese in → written Chinese out,
+        # otherwise English in → written English out.
+        chinese_source = source_lang.lower().startswith("zh") or (
+            likely_language_from_text(" ".join(topic_paragraphs)) == "zh"
+        )
+        rewrite = rewrite_chinese if chinese_source else rewrite_english
+        rewritten_paragraphs = rewrite(
             topic_paragraphs,
             llm=llm or "ollama/glm-5.2:cloud",
             max_tokens=max_tokens,
